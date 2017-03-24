@@ -8095,10 +8095,6 @@
       <TargetDriverDllRegistry>
         <SetRegEntry>
           <Number>0</Number>
-          <Key>DLGUARM</Key>
-        </SetRegEntry>
-        <SetRegEntry>
-          <Number>0</Number>
           <Key>ARMRTXEVENTFLAGS</Key>
           <Name>-L70 -Z18 -C0 -M0 -T1</Name>
         </SetRegEntry>
@@ -8129,7 +8125,7 @@
           <Type>0</Type>
           <LineNumber>205</LineNumber>
           <EnabledFlag>1</EnabledFlag>
-          <Address>131448</Address>
+          <Address>131596</Address>
           <ByteObject>0</ByteObject>
           <HtxType>0</HtxType>
           <ManyObjects>0</ManyObjects>
@@ -8145,7 +8141,7 @@
           <Type>0</Type>
           <LineNumber>275</LineNumber>
           <EnabledFlag>1</EnabledFlag>
-          <Address>106912</Address>
+          <Address>106920</Address>
           <ByteObject>0</ByteObject>
           <HtxType>0</HtxType>
           <ManyObjects>0</ManyObjects>
@@ -8203,7 +8199,7 @@
       <DebugFlag>
         <trace>0</trace>
         <periodic>0</periodic>
-        <aLwin>1</aLwin>
+        <aLwin>0</aLwin>
         <aCover>0</aCover>
         <aSer1>0</aSer1>
         <aSer2>0</aSer2>

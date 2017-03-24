@@ -83,6 +83,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define MESH_ACCESS_ADDR        	(RBC_MESH_ACCESS_ADDRESS_BLE_ADV)   /**< Access address for the mesh to operate on. */
 #define MESH_INTERVAL_MIN_MS    	(100)                               /**< Mesh minimum advertisement interval in milliseconds. */
 #define MESH_CHANNEL            	(38)                                /**< BLE channel to operate on. Single channel only. */
+
 #define APP_TIMER_PRESCALER        	(0)                                 /**< Value of the RTC1 PRESCALER register. */
 #define APP_TIMER_MAX_TIMERS       	(12 + BSP_APP_TIMERS_NUMBER)      	/**< Maximum number of simultaneously created timers. */
 #define APP_TIMER_OP_QUEUE_SIZE    	(4)                                 /**< Size of timer operation queues. */
@@ -97,24 +98,45 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define SOUND_MES_INTERVAL    	APP_TIMER_TICKS(12, APP_TIMER_PRESCALER) 	/**< sound measure interval (ticks). */
 #define LIGHT_MES_INTERVAL    	APP_TIMER_TICKS(540, APP_TIMER_PRESCALER) 	/**< light sonsor measure interval (ticks). */
 #define TEMP_MES_INTERVAL    	APP_TIMER_TICKS(620, APP_TIMER_PRESCALER) 	/**< temperature measure interval (ticks). */
-#define WATCHDOG_INTERVAL    	APP_TIMER_TICKS(1005, APP_TIMER_PRESCALER) 	/**< watchdog interval (ticks). */
+#define WATCHDOG_INTERVAL    	APP_TIMER_TICKS(505, APP_TIMER_PRESCALER) 	/**< watchdog interval (ticks). */
 #define KEY_PERIOD_HANG_SENSOR	APP_TIMER_TICKS(3009, APP_TIMER_PRESCALER)  /**< detect key hang motion and sound interval (ticks). */
+#define TRIGGER_INTERVAL		APP_TIMER_TICKS(300000, APP_TIMER_PRESCALER)  /**< TRIGGER THEN DELAY OFF(ticks). */
+
+/**@brief Timer status. */
+typedef enum
+{
+    APP_TIMER_STOP,                 /**< The timer no initial or stoped. */
+	APP_TIMER_START                 /**< The timer already started. */
+} app_timer_status_t;
 
 static app_timer_id_t           m_heartbeat_timer_id;         /**< heartbeat timer. */
+static app_timer_status_t		s_heartbeat_timer;			  /**< status of heartbeat timer. */	
 #ifdef RELAY_LATCH
 static app_timer_id_t           m_relay_timer_id;             /**< relay execute timer. */
+static app_timer_status_t		s_relay_timer;				  /**< status of relay execute timer. */
 #endif
 static app_timer_id_t           m_communicate_timer_id;       /**< led communicate timer. */
+static app_timer_status_t		s_communicate_timer;		  /**< status of led communicate timer. */
 static app_timer_id_t           m_motion_sound_timer_id;      /**< motion and sound event timer. */
+static app_timer_status_t		s_motion_sound_timer;		  /**< status of motion and sound event timer. */
 #ifdef BREATH_LED
 static app_timer_id_t           m_pwm_update_timer_id;        /**< PWM update timer. */
+static app_timer_status_t		s_pwm_update_timer;			  /**< status of PWM update timer. */
 #endif
 static app_timer_id_t           m_pir_mes_timer_id;           /**< PIR measure timer. */
+static app_timer_status_t		s_pir_mes_timer;			  /**< status of PIR measure timer. */
 static app_timer_id_t           m_sound_mes_timer_id;         /**< sound measure timer. */
+static app_timer_status_t		s_sound_mes_timer;			  /**< status of sound measure timer. */
 static app_timer_id_t           m_light_mes_timer_id;         /**< light sensor measure timer. */
+static app_timer_status_t		s_light_mes_timer; 			  /**< status of light sensor measure timer. */
 static app_timer_id_t           m_temp_mes_timer_id;          /**< temperature measure timer. */
+static app_timer_status_t		s_temp_mes_timer;			  /**< status of temperature measure timer. */
 static app_timer_id_t           m_watchdog_timer_id;          /**< watchdog timer. */
+static app_timer_status_t		s_watchdog_timer; 			  /**< status of watchdog timer. */
 static app_timer_id_t           m_hang_on_timer_id;           /**< hang on sound & pir timer. */
+static app_timer_status_t		s_hang_on_timer;			  /**< status of hang on sound & pir timer. */
+static app_timer_id_t           m_trigger_timer_id; 		  /**< darkness occpuy sensor trigger timer. */	
+static app_timer_status_t		s_trigger_timer;  			  /**< status of trigger timer. */
 
 static ble_temp_t               m_temp;     /**< Structure used to identify the battery service. */
 static ble_light_t              m_light;
@@ -122,18 +144,20 @@ static volatile bool ready_flag;            /* A flag indicating PWM status. */
 volatile int32_t adc_sample[4];
 volatile int32_t PIR_Buffer[2];
 volatile int32_t sound_sample = 0;
-volatile int32_t light_sample = 0;
+volatile uint32_t light_sample = 0;
 volatile int32_t temp_sample = 0;
 volatile int16_t temp_centigrade;
 volatile int16_t temp_fahrenheit; 
 volatile int16_t calibration_temperature = 0;
 
+static  uint8_t  pir_triggle_mode = 0;
 led_event_t			 led_event;
 pwm_enevt_t			 pwm_event;
 uint8_t 			 relay_status = 0;
 nrf_drv_wdt_channel_id m_channel_id;		//wdt
 void update_led_event(led_event_e led_event_type);
-
+void relay_on(void);
+void relay_off(void);
 
 uint16_t const ntc_table_10K[20] =	
 {
@@ -173,6 +197,20 @@ static nrf_clock_lf_cfg_t m_clock_cfg =
 #ifdef NRF52
 #define EXAMPLE_DFU_BANK_ADDR   (0x40000)
 #endif
+
+static void trigger_handler(void * p_context)
+{
+	if(pir_triggle_mode)
+	{
+		
+		pir_triggle_mode = 0;
+		relay_status = 0;
+		relay_off();	
+		nrf_gpio_pin_clear(LED_1);
+		nrf_gpio_pin_clear(LED_3);			
+	}
+	
+}
 
 
 void shut_pir_sound_timer(void)
@@ -261,7 +299,14 @@ int16_t update_temperature(int16_t adc, _Bool c)
 void wdt_event_handler(void)
 {
     LEDS_OFF(LEDS_MASK);
-    
+ 
+#if 1	
+	for(uint8_t i= 0; i <= 20; i++)
+	{
+		nrf_delay_ms(50);
+		nrf_gpio_pin_toggle(BSP_LED_0);
+	}	
+#endif	
     //NOTE: The max amount of time we can spend in WDT interrupt is two cycles of 32768[Hz] clock - after that, reset occurs
 }
 /**
@@ -301,9 +346,16 @@ void pwm_ready_callback(uint32_t pwm_id)    // PWM callback function
 #endif
 void leds_on_for_while(void)
 {
-	nrf_delay_ms(1500);
+	uint8_t i;
+	
+	for( i= 0; i <= 20; i++)
+	{
+		nrf_delay_ms(50);
+		nrf_gpio_pin_toggle(BSP_LED_1);
+	}
+		
 	nrf_gpio_pin_clear(BSP_LED_0);
-	nrf_gpio_pin_set(BSP_LED_1);
+	nrf_gpio_pin_clear(BSP_LED_1);
 	nrf_gpio_pin_clear(BSP_LED_2);
 	nrf_gpio_pin_clear(BSP_LED_3);
 }
@@ -341,14 +393,14 @@ void led_communicate_blink(led_event_e led_event_type)
 	//UNUSED_PARAMETER(led_event_type);
 	update_led_event(led_event_type);
 	
-	nrf_gpio_pin_clear(BSP_LED_1);
+	nrf_gpio_pin_set(BSP_LED_1);
 	uint32_t err_code = app_timer_start(m_communicate_timer_id, COMMUNICATE_INTERVAL, NULL);
 	APP_ERROR_CHECK(err_code);	
 }
 void motion_sound_event_set(led_event_e led_event_type)
 {
 	update_led_event(led_event_type);
-	nrf_gpio_pin_clear(BSP_LED_1);	
+	nrf_gpio_pin_set(BSP_LED_1);	
 	
 	uint32_t err_code = app_timer_start(m_motion_sound_timer_id, MOTION_SOUND_INTERVAL, NULL);
 	APP_ERROR_CHECK(err_code);	
@@ -414,7 +466,7 @@ static void led_heartbeat_handler(void * p_context)
 		{
 			if(!led_event.on_time--)
 			{					
-				nrf_gpio_pin_set(BSP_LED_1);
+				nrf_gpio_pin_clear(BSP_LED_1);
 				led_event.status = false;
 				led_event.off_time = (uint16_t)HEARTBEAT_EVENT_OFF; 
 				led_event.on_time = (uint16_t)HEARTBEAT_EVENT_ON; 
@@ -423,7 +475,7 @@ static void led_heartbeat_handler(void * p_context)
 		{
 			if(!led_event.off_time--)
 			{			
-				nrf_gpio_pin_clear(BSP_LED_1);
+				nrf_gpio_pin_set(BSP_LED_1);
 				led_event.status = true;
 				led_event.on_time = (uint16_t)HEARTBEAT_EVENT_ON;
 				led_event.off_time = (uint16_t)HEARTBEAT_EVENT_OFF; 		
@@ -478,7 +530,7 @@ static void led_off_handler(void * p_context)
     uint32_t err_code;
 	
 	UNUSED_PARAMETER(p_context);		
-    nrf_gpio_pin_set(BSP_LED_1);	
+    nrf_gpio_pin_clear(BSP_LED_1);	
 	//update_led_event(HEARTBEAT_EVENT);
 	
 	led_event.status = false;
@@ -501,7 +553,7 @@ static void led_off_handler(void * p_context)
 static void blink_off_handler(void * p_context)
 {	
 	UNUSED_PARAMETER(p_context);		
-    nrf_gpio_pin_set(BSP_LED_1);	
+    nrf_gpio_pin_clear(BSP_LED_1);	
 	update_led_event(HEARTBEAT_EVENT);			
 }
 
@@ -578,7 +630,7 @@ static void pwm_update_handler(void * p_context)
  */
 static void pir_event_handler(void * p_context)
 {
-//	uint32_t err_code;
+	uint32_t err_code;
 	
 	UNUSED_PARAMETER(p_context);	
 	//PIR_Buffer[0] = PIR_Buffer[1];
@@ -593,9 +645,25 @@ static void pir_event_handler(void * p_context)
 #ifdef DEBUG_LOG_RTT
 		SEGGER_RTT_printf(0, "MOTION_EVENT %2d\r\n",(uint16_t)PIR_Buffer[1]);															
 #endif	
+		if((light_sample < 10)&&(!pir_triggle_mode)) /* NO Enter */
+		{
+			pir_triggle_mode = 1;
+						
+			relay_status = 1;
+			relay_on();			
+			
+			nrf_gpio_pin_set(LED_1);
+			nrf_gpio_pin_set(LED_3);			
+			
+			err_code = app_timer_start(m_trigger_timer_id, TRIGGER_INTERVAL, NULL);		/* TRIGGER OFF */
+			APP_ERROR_CHECK(err_code);			
 
-		shut_pir_sound_timer();
-		
+#ifdef DEBUG_LOG_RTT
+		SEGGER_RTT_printf(0, "enter trigger mode.\r\n");															
+#endif				
+			
+		}		
+		shut_pir_sound_timer();		
 	}
 		
 }
@@ -640,16 +708,15 @@ static void sound_event_handler(void * p_context)
  */
 static void light_event_handler(void * p_context)
 {
-	uint32_t l1;
+	//uint32_t l1;
 	uint32_t err_code;
 	UNUSED_PARAMETER(p_context);	
 	
-	light_sample = nrf_adc_convert_single(NRF_ADC_CONFIG_INPUT_3);	
-	l1 = (uint32_t)light_sample;
-	l1 *= 527;
-	l1 /= 2000;		/* k = 1891 */
-	
-	err_code = ble_light_sensor_level_update(&m_light,(uint16_t)l1);
+	light_sample = (uint32_t) nrf_adc_convert_single(NRF_ADC_CONFIG_INPUT_3);		
+	light_sample *= 527;
+	light_sample /= 2000;		/* k = 1891 */
+
+	err_code = ble_light_sensor_level_update(&m_light,(uint16_t)light_sample);
     if ((err_code != NRF_SUCCESS) &&
         (err_code != NRF_ERROR_INVALID_STATE) &&
         (err_code != BLE_ERROR_NO_TX_BUFFERS) &&
@@ -659,10 +726,9 @@ static void light_event_handler(void * p_context)
         APP_ERROR_HANDLER(err_code);
     }	
 	
-//#ifdef DEBUG_LOG_RTT
-//	SEGGER_RTT_printf(0, "adc:%2d  ",(uint16_t)light_sample);	
-//	SEGGER_RTT_printf(0, "LUX:%2d\r\n",(uint16_t)l1);															
-//#endif		
+#ifdef DEBUG_LOG_RTT	
+	SEGGER_RTT_printf(0, "LUX:%2d\r\n",(uint16_t)light_sample);															
+#endif		
 			
 }
 /**@brief Function for handling the temperature event timer timeout.
@@ -688,9 +754,9 @@ static void temperature_event_handler(void * p_context)
     {
         APP_ERROR_HANDLER(err_code);
     }	
-#ifdef DEBUG_LOG_RTT
-	SEGGER_RTT_printf(0, "temp:%2d\r\n",(int16_t)temp_sample);															
-#endif		
+//#ifdef DEBUG_LOG_RTT
+//	SEGGER_RTT_printf(0, "temp:%2d\r\n",(int16_t)temp_sample);															
+//#endif		
 			
 }
 
@@ -738,8 +804,18 @@ void app_error_handler(uint32_t error_code, uint32_t line_num, const uint8_t * p
 #ifdef DEBUG_LOG_RTT
 	SEGGER_RTT_printf(0, "[app_error_handler],error_code: %d, line_num: %d, file_name:%s\r\n",(uint16_t)error_code,
 																	(uint16_t)line_num, p_file_name);
-#endif    
-	error_loop();
+#endif  
+#if 0	
+	while(true)
+	{
+		for(uint8_t i=0;i<=20;i++)
+		{
+			nrf_delay_ms(50);
+			nrf_gpio_pin_toggle(BSP_LED_2);			
+		}
+	};
+#endif	
+	//error_loop();
 }
 
 /** @brief Hardware fault handler. */
@@ -747,7 +823,8 @@ void HardFault_Handler(void)
 {
 #ifdef DEBUG_LOG_RTT
 		SEGGER_RTT_printf(0, "HardFault_Handler.\r\n  ");
-#endif    
+#endif   
+
 	error_loop();
 }
 
@@ -756,7 +833,17 @@ void app_error_fault_handler(uint32_t id, uint32_t pc, uint32_t info)
 #ifdef DEBUG_LOG_RTT
 	SEGGER_RTT_printf(0, "[app_error_fault],ID: %d,PC: %d,info: %d.\r\n",id,pc,info);
 #endif
-    error_loop();
+#if 0	
+	while(true)
+	{
+		for(uint8_t i=0;i<=50;i++)
+		{
+			nrf_delay_ms(300);
+			nrf_gpio_pin_toggle(BSP_LED_2);			
+		}
+	};
+#endif	
+    //error_loop();
 }
 /**
 * @brief Softdevice event handler
@@ -785,6 +872,7 @@ static void rbc_mesh_event_handler(rbc_mesh_event_t* p_evt)
                 break;
 
             //led_config(p_evt->params.rx.value_handle, p_evt->params.rx.p_data[0]);
+			
             break;
         case RBC_MESH_EVENT_TYPE_TX:
             break;
@@ -832,7 +920,7 @@ void gpio_init(void)
     {
         nrf_gpio_pin_set(LED_START + i);
     }	
-	nrf_gpio_pin_clear(BSP_LED_1);	// LOW LEVEL LED1 ON
+	nrf_gpio_pin_set(BSP_LED_1);	// LOW LEVEL LED1 ON
 	
 #if defined(BOARD_LIGHTSWITCH)			
 	nrf_gpio_cfg_output(RELAY_OFF);
@@ -869,7 +957,11 @@ void bsp_event_handler(bsp_event_t event)
     {
         case BSP_EVENT_KEY_0:
 		
-        case BSP_EVENT_KEY_1:		
+        case BSP_EVENT_KEY_1:	
+
+		pir_triggle_mode = 0;				/* if key press exit trigger mode */
+		app_timer_stop(m_trigger_timer_id);
+		
 		if(relay_status)
 		{			
 			relay_status = 0;
@@ -877,8 +969,11 @@ void bsp_event_handler(bsp_event_t event)
 #ifdef BREATH_LED			
 			update_pwm_value(0x00);
 #else			
-			nrf_gpio_pin_clear(LED_1);
-			nrf_gpio_pin_clear(LED_3);	
+	
+			
+			nrf_gpio_pin_set(LED_1);
+			nrf_gpio_pin_set(LED_3);				
+			
 #endif			
 			shut_pir_sound_timer();		
 			err_code = app_timer_start(m_hang_on_timer_id, KEY_PERIOD_HANG_SENSOR, NULL);			
@@ -902,8 +997,11 @@ void bsp_event_handler(bsp_event_t event)
 #ifdef BREATH_LED			
 			update_pwm_value(100);	
 #else			
-			nrf_gpio_pin_set(LED_1);
-			nrf_gpio_pin_set(LED_3);					
+
+			nrf_gpio_pin_clear(LED_1);
+			nrf_gpio_pin_clear(LED_3);
+
+			
 #endif			
 #ifdef RELAY_LATCH
 			relay_on();
@@ -983,6 +1081,8 @@ static void timers_init(void)
     err_code = app_timer_create(&m_hang_on_timer_id, APP_TIMER_MODE_SINGLE_SHOT, hang_on_handler);                                                                
     APP_ERROR_CHECK(err_code);	
 	
+    err_code = app_timer_create(&m_trigger_timer_id, APP_TIMER_MODE_SINGLE_SHOT, trigger_handler);                                                                
+    APP_ERROR_CHECK(err_code);	
 }
 /**@brief Function for starting application timers.
  */
@@ -991,24 +1091,25 @@ static void application_timers_start(void)
     uint32_t err_code;
 
     // Start application timers.
-    err_code = app_timer_start(m_sound_mes_timer_id, SOUND_MES_INTERVAL, NULL);			//12ms
+    err_code = app_timer_start(m_sound_mes_timer_id, SOUND_MES_INTERVAL, NULL);	/* sound detect timer */
     APP_ERROR_CHECK(err_code);		
 	
-    err_code = app_timer_start(m_watchdog_timer_id, WATCHDOG_INTERVAL, NULL);			//1000ms
+    err_code = app_timer_start(m_watchdog_timer_id, WATCHDOG_INTERVAL, NULL);	/* watchdog feed */
     APP_ERROR_CHECK(err_code);
 	
-    err_code = app_timer_start(m_heartbeat_timer_id, HEARTBEAT_INTERVAL, NULL);			//100ms
+    err_code = app_timer_start(m_heartbeat_timer_id, HEARTBEAT_INTERVAL, NULL);	/* hearybeat timer */
     APP_ERROR_CHECK(err_code);
 		
-    err_code = app_timer_start(m_pir_mes_timer_id, PIR_MES_INTERVAL, NULL);				//200ms
+    err_code = app_timer_start(m_pir_mes_timer_id, PIR_MES_INTERVAL, NULL);		/* PIR detect timer */
     APP_ERROR_CHECK(err_code);		
 	
-    err_code = app_timer_start(m_light_mes_timer_id, LIGHT_MES_INTERVAL, NULL);			//500ms
+    err_code = app_timer_start(m_light_mes_timer_id, LIGHT_MES_INTERVAL, NULL); /* light sensor measurement */
     APP_ERROR_CHECK(err_code);	
 	
-    err_code = app_timer_start(m_temp_mes_timer_id, TEMP_MES_INTERVAL, NULL);			//600ms
+    err_code = app_timer_start(m_temp_mes_timer_id, TEMP_MES_INTERVAL, NULL);	/* temperature measurement */
     APP_ERROR_CHECK(err_code);
-	
+
+
 }
 /**@brief Function for initializing buttons and leds.
  *
@@ -1049,7 +1150,11 @@ void bsp_wdt_init(void)
 	uint32_t err_code = NRF_SUCCESS;
 	
     //Configure WDT.
-	nrf_drv_wdt_config_t config = NRF_DRV_WDT_DEAFULT_CONFIG;
+	nrf_drv_wdt_config_t config;	
+	config.behaviour = NRF_WDT_BEHAVIOUR_PAUSE_SLEEP_HALT;
+	config.interrupt_priority = APP_IRQ_PRIORITY_HIGH;
+	config.reload_value = 2000;	
+	
     err_code = nrf_drv_wdt_init(&config, wdt_event_handler);
     APP_ERROR_CHECK(err_code);
     err_code = nrf_drv_wdt_channel_alloc(&m_channel_id);
@@ -1151,6 +1256,8 @@ int main(void)
 	
 	SEGGER_RTT_printf(0, "BUILD DATE:[%s %s].\r\n", __DATE__,__TIME__);
 	SEGGER_RTT_printf(0, "RESET_REASON:%2x\r\n",(uint16_t)NRF_POWER->RESETREAS);
+			
+	NRF_POWER->RESETREAS = 0xffffffff;
 #endif	
 	
     /* Enable Softdevice (including sd_ble before framework */
@@ -1179,6 +1286,7 @@ int main(void)
     uint32_t error_code = rbc_mesh_init(init_params);
     APP_ERROR_CHECK(error_code);
 
+	nrf_drv_wdt_channel_feed(m_channel_id);
     /* request values for both LEDs on the mesh */
     for (uint32_t i = 0; i < 2; ++i)
     {
@@ -1204,7 +1312,7 @@ int main(void)
 //	app_pwm_enable(&PWM1);
 	application_timers_start();	
 //	motion_sound_event_set(HEARTBEAT_EVENT);
-	
+//	rbc_mesh_stop();
     rbc_mesh_event_t evt;
     while (true)
     {
@@ -1229,9 +1337,13 @@ int main(void)
         if (rbc_mesh_event_get(&evt) == NRF_SUCCESS)
         {   
             rbc_mesh_event_handler(&evt);
-            rbc_mesh_event_release(&evt);						
+			nrf_drv_wdt_channel_feed(m_channel_id);
+            rbc_mesh_event_release(&evt);			
         }						
 		sd_app_evt_wait();
+		
+		nrf_drv_wdt_channel_feed(m_channel_id);
+				
     }
 }
 

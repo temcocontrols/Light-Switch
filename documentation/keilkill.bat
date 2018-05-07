@@ -1,3 +1,5 @@
+echo Batch file to delete junk files every now & then in the project. 
+echo These are also in the gitignore file as well. 
 del *.bak /s
 del *.ddk /s
 del *.edk /s
